@@ -1,0 +1,10 @@
+[project]
+name = "mcp-document-project"
+version = "0.1.0"
+description = "Document management MCP server + client with a Claude-powered CLI"
+requires-python = ">=3.10"
+dependencies = [
+    "anthropic>=0.40.0",
+    "mcp[cli]>=1.2.0,<2",
+    "python-dotenv>=1.0.0",
+]
