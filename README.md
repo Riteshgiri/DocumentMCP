@@ -17,6 +17,12 @@ cp .env.example .env   # then put your ANTHROPIC_API_KEY in .env
 - **Chat app:** `uv run main.py`, then ask: `What is the contents of the report.pdf document?`
   - Type `@` to autocomplete a document name (e.g. `Summarize @report.pdf`). Mentioned documents are read as MCP resources and added to the prompt, so Claude doesn't need a tool call.
 
+  - Type `/` to see commands (MCP prompts). `/format plan.md` has Claude rewrite that document in Markdown using the `edit_document` tool.
+
+## Prompts
+
+- `format` (argument `doc_id`): rewrites a document in Markdown format
+
 ## Resources
 
 - `docs://documents` (direct, `application/json`): list of document ids

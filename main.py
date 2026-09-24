@@ -37,20 +37,67 @@ def tool_result_text(result) -> str:
     )
 
 
-class DocMentionCompleter(Completer):
-    """Suggests document ids when the word being typed starts with '@'."""
+class CommandCompleter(Completer):
+    """Completes /commands (MCP prompts), their document argument, and @mentions."""
 
-    def __init__(self, doc_ids: list[str]):
+    def __init__(self, doc_ids: list[str], prompts):
         self.doc_ids = doc_ids
+        self.prompts = prompts
 
-    def get_completions(self, document, complete_event):
-        word = document.text_before_cursor.split(" ")[-1]
-        if not word.startswith("@"):
-            return
-        prefix = word[1:]
+    def _complete_doc_ids(self, prefix: str):
         for doc_id in self.doc_ids:
             if doc_id.startswith(prefix):
                 yield Completion(doc_id, start_position=-len(prefix))
+
+    def get_completions(self, document, complete_event):
+        text = document.text_before_cursor
+
+        # "/for" -> suggest prompt names
+        if text.startswith("/") and " " not in text:
+            prefix = text[1:]
+            for p in self.prompts:
+                if p.name.startswith(prefix):
+                    yield Completion(
+                        p.name, start_position=-len(prefix), display_meta=p.description
+                    )
+            return
+
+        word = text.split(" ")[-1]
+
+        # "/format pl" -> suggest document ids for the prompt's argument
+        if text.startswith("/"):
+            yield from self._complete_doc_ids(word)
+            return
+
+        # "what's in @rep" -> suggest document ids
+        if word.startswith("@"):
+            yield from self._complete_doc_ids(word[1:])
+
+
+async def run_command(client: MCPClient, prompts, query: str) -> list[dict] | None:
+    """Turn '/name arg1 arg2' into the messages of the matching MCP prompt."""
+    name, *values = query[1:].split()
+    prompt = next((p for p in prompts if p.name == name), None)
+    if prompt is None:
+        print(f"Unknown command /{name}. Available: {[f'/{p.name}' for p in prompts]}")
+        return None
+
+    arg_names = [a.name for a in prompt.arguments or []]
+    required = [a.name for a in prompt.arguments or [] if a.required]
+    args = dict(zip(arg_names, values))
+    missing = [n for n in required if n not in args]
+    if missing:
+        usage = " ".join(f"<{n}>" for n in arg_names)
+        print(f"Usage: /{name} {usage}")
+        return None
+
+    print(f"  [prompt] {name}({json.dumps(args)})")
+    prompt_messages = await client.get_prompt(name, args)
+    return [
+        {"role": m.role, "content": m.content.text}
+        for m in prompt_messages
+        if m.content.type == "text"
+    ]
 
 
 async def add_mentioned_docs(client: MCPClient, doc_ids: list[str], query: str) -> str:
@@ -130,15 +177,17 @@ async def main():
     async with MCPClient(command=sys.executable, args=["mcp_server.py"]) as client:
         tools = to_claude_tools(await client.list_tools())
         doc_ids = await client.read_resource("docs://documents")
+        prompts = await client.list_prompts()
         print(f"Connected to DocumentMCP. Tools: {[t['name'] for t in tools]}")
         print(f"Documents (mention with @): {doc_ids}")
+        print(f"Commands: {[f'/{p.name}' for p in prompts]}")
         print("Ask a question (Ctrl+C or 'exit' to quit).\n")
 
         # Autocomplete needs a real terminal; fall back to input() when piped.
         prompt_session = None
         if sys.stdin.isatty():
             prompt_session = PromptSession(
-                completer=DocMentionCompleter(doc_ids),
+                completer=CommandCompleter(doc_ids, prompts),
                 complete_while_typing=True,
             )
 
@@ -157,8 +206,14 @@ async def main():
             if query.lower() in {"exit", "quit"}:
                 break
 
-            prompt = await add_mentioned_docs(client, doc_ids, query)
-            messages.append({"role": "user", "content": prompt})
+            if query.startswith("/"):
+                prompt_messages = await run_command(client, prompts, query)
+                if not prompt_messages:
+                    continue
+                messages.extend(prompt_messages)
+            else:
+                prompt = await add_mentioned_docs(client, doc_ids, query)
+                messages.append({"role": "user", "content": prompt})
             answer = await run_turn(claude, client, tools, messages)
             print(f"\n{answer}\n")
 

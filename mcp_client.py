@@ -65,6 +65,14 @@ class MCPClient:
 
         return resource.text
 
+    async def list_prompts(self) -> list[types.Prompt]:
+        result = await self.session().list_prompts()
+        return result.prompts
+
+    async def get_prompt(self, prompt_name, args: dict[str, str]):
+        result = await self.session().get_prompt(prompt_name, args)
+        return result.messages
+
     async def cleanup(self):
         await self._exit_stack.aclose()
         self._session = None
@@ -95,6 +103,12 @@ async def main():
 
         content = await client.read_resource("docs://documents/plan.md")
         print("docs://documents/plan.md ->", content)
+
+        prompts = await client.list_prompts()
+        print("\nprompts ->", [p.name for p in prompts])
+
+        messages = await client.get_prompt("format", {"doc_id": "plan.md"})
+        print("get_prompt('format', plan.md) ->", messages[0].content.text)
 
 
 if __name__ == "__main__":
