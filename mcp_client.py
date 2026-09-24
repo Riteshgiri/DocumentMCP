@@ -1,10 +1,12 @@
 import asyncio
+import json
 import sys
 from contextlib import AsyncExitStack
 from typing import Any, Optional
 
 from mcp import ClientSession, StdioServerParameters, types
 from mcp.client.stdio import stdio_client
+from pydantic import AnyUrl
 
 
 class MCPClient:
@@ -53,6 +55,16 @@ class MCPClient:
     ) -> types.CallToolResult | None:
         return await self.session().call_tool(tool_name, tool_input)
 
+    async def read_resource(self, uri: str) -> Any:
+        result = await self.session().read_resource(AnyUrl(uri))
+        resource = result.contents[0]
+
+        if isinstance(resource, types.TextResourceContents):
+            if resource.mimeType == "application/json":
+                return json.loads(resource.text)
+
+        return resource.text
+
     async def cleanup(self):
         await self._exit_stack.aclose()
         self._session = None
@@ -77,6 +89,12 @@ async def main():
 
         result = await client.call_tool("read_doc_contents", {"doc_id": "report.pdf"})
         print("\nread_doc_contents('report.pdf') ->", result.content[0].text)
+
+        doc_ids = await client.read_resource("docs://documents")
+        print("\ndocs://documents ->", doc_ids)
+
+        content = await client.read_resource("docs://documents/plan.md")
+        print("docs://documents/plan.md ->", content)
 
 
 if __name__ == "__main__":

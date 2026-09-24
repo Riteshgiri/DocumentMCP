@@ -5,6 +5,8 @@ import sys
 
 from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
+from prompt_toolkit import PromptSession
+from prompt_toolkit.completion import Completer, Completion
 
 from mcp_client import MCPClient
 
@@ -32,6 +34,43 @@ def tool_result_text(result) -> str:
     parts = [c.text for c in result.content if getattr(c, "type", None) == "text"]
     return "\n".join(parts) if parts else json.dumps(
         [c.model_dump() for c in result.content]
+    )
+
+
+class DocMentionCompleter(Completer):
+    """Suggests document ids when the word being typed starts with '@'."""
+
+    def __init__(self, doc_ids: list[str]):
+        self.doc_ids = doc_ids
+
+    def get_completions(self, document, complete_event):
+        word = document.text_before_cursor.split(" ")[-1]
+        if not word.startswith("@"):
+            return
+        prefix = word[1:]
+        for doc_id in self.doc_ids:
+            if doc_id.startswith(prefix):
+                yield Completion(doc_id, start_position=-len(prefix))
+
+
+async def add_mentioned_docs(client: MCPClient, doc_ids: list[str], query: str) -> str:
+    """Read every @mentioned document as a resource and inject it into the prompt."""
+    mentioned = [doc_id for doc_id in doc_ids if f"@{doc_id}" in query]
+    if not mentioned:
+        return query
+
+    context = []
+    for doc_id in mentioned:
+        uri = f"docs://documents/{doc_id}"
+        print(f"  [resource] {uri}")
+        content = await client.read_resource(uri)
+        context.append(f'<document id="{doc_id}">\n{content}\n</document>')
+
+    return (
+        "The user mentioned these documents. Their contents are included below, "
+        "so you don't need a tool to read them.\n\n"
+        + "\n".join(context)
+        + f"\n\n<query>\n{query}\n</query>"
     )
 
 
@@ -90,13 +129,26 @@ async def main():
 
     async with MCPClient(command=sys.executable, args=["mcp_server.py"]) as client:
         tools = to_claude_tools(await client.list_tools())
+        doc_ids = await client.read_resource("docs://documents")
         print(f"Connected to DocumentMCP. Tools: {[t['name'] for t in tools]}")
+        print(f"Documents (mention with @): {doc_ids}")
         print("Ask a question (Ctrl+C or 'exit' to quit).\n")
+
+        # Autocomplete needs a real terminal; fall back to input() when piped.
+        prompt_session = None
+        if sys.stdin.isatty():
+            prompt_session = PromptSession(
+                completer=DocMentionCompleter(doc_ids),
+                complete_while_typing=True,
+            )
 
         messages: list[dict] = []
         while True:
             try:
-                query = input("> ").strip()
+                if prompt_session:
+                    query = (await prompt_session.prompt_async("> ")).strip()
+                else:
+                    query = input("> ").strip()
             except (EOFError, KeyboardInterrupt):
                 print()
                 break
@@ -105,7 +157,8 @@ async def main():
             if query.lower() in {"exit", "quit"}:
                 break
 
-            messages.append({"role": "user", "content": query})
+            prompt = await add_mentioned_docs(client, doc_ids, query)
+            messages.append({"role": "user", "content": prompt})
             answer = await run_turn(claude, client, tools, messages)
             print(f"\n{answer}\n")
 
